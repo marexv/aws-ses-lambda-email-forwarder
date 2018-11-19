@@ -62,15 +62,18 @@ def parse_s3_objects_body_to_email(s3_object_body: str) -> Dict[str, str]:
 
     email_object = email.message_from_string(s3_object_body)
 
-    email_subject = email_object.get("Subject", "DEFAULT SUBJECT ADDED BY ME")
-    logger.info(f"Mail Subject: {email_subject}")
-
     email_original_sender = email_object.get("From", "NO ORIGINAL SENDER")
     logger.info(f"Mail From: {email_original_sender}")
 
+    email_subject = email_object.get("Subject", "DEFAULT SUBJECT ADDED BY ME")
+    logger.info(f"Mail Subject: {email_subject}")
+    
+    email_to = email_object.get("To", "")
+    email_to_addr_string = address_data_to_list_of_address_strings(email_to)
+    logger.info(f"Mail To: {email_to_addr_string}")
+
     email_cc = email_object.get("CC", '')
-    email_cc_addr_tuples = email.utils.getaddresses([email_cc])
-    email_cc_addr_string = [addr[1] for addr in email_cc_addr_tuples]
+    email_cc_addr_string = address_data_to_list_of_address_strings(email_cc)
     logger.info(f"Mail CC: {email_cc_addr_string}")
     
     email_text = ""
@@ -99,19 +102,45 @@ def parse_s3_objects_body_to_email(s3_object_body: str) -> Dict[str, str]:
     
     # TODO: Migrate to data class with python 3.7
     parsed_mail_data = {
+        "from": email_original_sender,
+        "to": email_to_addr_string,
+        "cc": email_cc_addr_string,
         "subject": email_subject,
         "text": email_text,
         "text_charset": email_text_charset,
         "html": email_text,
         "html_charset": email_html_charset,
-        "original_sender": email_original_sender,
-        "cc": email_cc_addr_string,
     }
     
     return parsed_mail_data
 
 
-def forward_email(parsed_mail_data: Dict[str, str]) -> Dict[str, str]:
+def mail_address_mapper(parsed_mail_data: Dict[str, str,]) -> str:
+    """maps incoming addresses to forwarding addresses."""
+    
+    email_to_addr_string = parsed_mail_data["to"]
+    
+    logger.info(f"Checking mappings for {email_to_addr_string}")
+
+    mail_mappings = {
+        "sample@waterpoloapparel.com": "marko.prcac@hotmail.com"
+    }
+
+    result = []
+
+    for address in email_to_addr_string:
+        if address in mail_mappings:
+            logger.info(f"Mappings {address} to {mail_mappings[address]}")
+            result += [mail_mappings[address]]
+        else:
+            result += [FORWARD_TO_ADDRESSES]
+
+    return result
+
+
+def forward_email(
+        parsed_mail_data: Dict[str, str],
+        forward_to_address= FORWARD_TO_ADDRESSES) -> Dict[str, str]:
     """Creates new mail and forwards it."""
 
     subject = parsed_mail_data["subject"]
@@ -119,7 +148,7 @@ def forward_email(parsed_mail_data: Dict[str, str]) -> Dict[str, str]:
     text_charset = parsed_mail_data["text_charset"]
     html = parsed_mail_data["html"]
     html_charset = parsed_mail_data["html_charset"]
-    original_sender = parsed_mail_data["original_sender"]
+    original_sender = parsed_mail_data["from"]
     email_cc_addresses = parsed_mail_data["cc"]
 
     reply_to_addresses = [original_sender] + email_cc_addresses
@@ -127,7 +156,7 @@ def forward_email(parsed_mail_data: Dict[str, str]) -> Dict[str, str]:
     response = ses_client.send_email(
         Source= ADDRESS_FOR_FORWARDING,
         Destination={
-            'ToAddresses': FORWARD_TO_ADDRESSES,
+            'ToAddresses': forward_to_address,
         },
         Message={
             'Subject': {
@@ -150,6 +179,12 @@ def forward_email(parsed_mail_data: Dict[str, str]) -> Dict[str, str]:
 
     return response
 
+def address_data_to_list_of_address_strings(
+        address_data: List[Tuple[str, str]]) -> List[str]:
+    """Parses address data from mail to list of emails."""
+    addr_tuples = email.utils.getaddresses([address_data])
+    return [addr[1] for addr in addr_tuples]
+
 
 def lambda_handler(event, context):
     """Main function invoked by notification from S3."""
@@ -169,11 +204,14 @@ def lambda_handler(event, context):
 
             s3_object_body = get_object_body_from_s3(bucket_name, object_key)
             parsed_mail_data = parse_s3_objects_body_to_email(s3_object_body)
-            response = forward_email(parsed_mail_data)
+            forward_to_addresses = mail_address_mapper(parsed_mail_data)
+
+            for address in forward_to_addresses:
+                forward_email(parsed_mail_data, address)
 
         return {
             'statusCode': 200,
-            'body': response
+            'body': json.dumps("All mails were sucessfully forwarded")
         }
 
     except KeyError:
