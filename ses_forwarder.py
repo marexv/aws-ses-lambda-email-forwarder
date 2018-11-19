@@ -61,10 +61,17 @@ def parse_s3_objects_body_to_email(s3_object_body: str) -> Dict[str, str]:
     """Parse string data to email object and extract needed information."""
 
     email_object = email.message_from_string(s3_object_body)
+
     email_subject = email_object.get("Subject", "DEFAULT SUBJECT ADDED BY ME")
     logger.info(f"Mail Subject: {email_subject}")
+
     email_original_sender = email_object.get("From", "NO ORIGINAL SENDER")
     logger.info(f"Mail From: {email_original_sender}")
+
+    email_cc = email_object.get("CC", '')
+    email_cc_addr_tuples = email.utils.getaddresses([email_cc])
+    email_cc_addr_string = [addr[1] for addr in email_cc_addr_tuples]
+    logger.info(f"Mail CC: {email_cc_addr_string}")
     
     email_text = ""
     email_text_charset = ""
@@ -97,7 +104,8 @@ def parse_s3_objects_body_to_email(s3_object_body: str) -> Dict[str, str]:
         "text_charset": email_text_charset,
         "html": email_text,
         "html_charset": email_html_charset,
-        "original_sender": email_original_sender
+        "original_sender": email_original_sender,
+        "cc": email_cc_addr_string,
     }
     
     return parsed_mail_data
@@ -112,7 +120,10 @@ def forward_email(parsed_mail_data: Dict[str, str]) -> Dict[str, str]:
     html = parsed_mail_data["html"]
     html_charset = parsed_mail_data["html_charset"]
     original_sender = parsed_mail_data["original_sender"]
-            
+    email_cc_addresses = parsed_mail_data["cc"]
+
+    reply_to_addresses = [original_sender] + email_cc_addresses
+
     response = ses_client.send_email(
         Source= ADDRESS_FOR_FORWARDING,
         Destination={
@@ -134,9 +145,7 @@ def forward_email(parsed_mail_data: Dict[str, str]) -> Dict[str, str]:
                 }
             }
         },
-        ReplyToAddresses=[
-            original_sender,
-        ],
+        ReplyToAddresses=reply_to_addresses
     )
 
     return response
