@@ -19,6 +19,7 @@ FORWARD_TO_ADDRESSES = os.environ.get('adressesToForward', '').split(',')
 
 def parse_incoming_s3_notification(record: dict) -> Tuple[str, str]:
     """Get bucket name and object key from notification received from S3."""
+
     logger.info("Processing new record")
     
     try:
@@ -40,7 +41,7 @@ def parse_incoming_s3_notification(record: dict) -> Tuple[str, str]:
 
 def get_object_body_from_s3(s3_bucket_name: str, s3_object_key: str) -> str:
     """Get object body from S3 by usig bucket name and object key."""
-    
+
     logger.info(f"Fetching mail {s3_bucket_name}/{s3_object_key} from s3")
     
     s3_object = s3_client.get_object(
@@ -51,11 +52,14 @@ def get_object_body_from_s3(s3_bucket_name: str, s3_object_key: str) -> str:
 
     s3_object_body = s3_object["Body"].read().decode('utf-8')
 
+    logger.info("Successfully retrieved objects body (content)")
+
     return s3_object_body    
 
 
 def parse_s3_objects_body_to_email(s3_object_body: str) -> Dict[str, str]:
     """Parse string data to email object and extract needed information."""
+
     email_object = email.message_from_string(s3_object_body)
     email_subject = email_object.get("Subject", "DEFAULT SUBJECT ADDED BY ME")
     logger.info(f"Mail Subject: {email_subject}")
@@ -68,21 +72,25 @@ def parse_s3_objects_body_to_email(s3_object_body: str) -> Dict[str, str]:
     email_html_charset = ""
     
     for part in email_object.walk():
-        c_type = part.get_content_type()
-        c_disp = part.get('Content-Disposition')
-        if c_type == 'text/plain' and c_disp == None:
+        content_type = part.get_content_type()
+        content_disp = part.get('Content-Disposition')
+
+        if content_type == 'text/plain' and content_disp == None:
+            logger.debug("Found plain text")
             email_text_charset = part.get('charset', 'UTF-8')
             email_text = email_text + '\n' + part.get_payload()
-            logger.info(f"Found text: {email_text}")
-            logger.info(f"Text Charset: {email_text_charset}")
-        elif c_type == 'text/html':
+            logger.debug(f"Found text: {email_text}")
+            logger.debug(f"Text Charset: {email_text_charset}")
+        elif content_type == 'text/html':
+            logger.debug("Found html text")
             email_html_charset = part.get('charset', 'UTF-8')
             email_html = email_html + '\n' + part.get_payload()
-            logger.info(f"Found html: {email_html}")
-            logger.info(f"Html Charset: {email_html_charset}")
+            logger.debug(f"Found html: {email_html}")
+            logger.debug(f"Html Charset: {email_html_charset}")
         else: 
             continue
     
+    # TODO: Migrate to data class with python 3.7
     parsed_mail_data = {
         "subject": email_subject,
         "text": email_text,
@@ -97,12 +105,13 @@ def parse_s3_objects_body_to_email(s3_object_body: str) -> Dict[str, str]:
 
 def forward_email(parsed_mail_data: Dict[str, str]) -> Dict[str, str]:
     """Creates new mail and forwards it."""
+
     subject = parsed_mail_data["subject"]
     text = parsed_mail_data["text"]
     text_charset = parsed_mail_data["text_charset"]
     html = parsed_mail_data["html"]
     html_charset = parsed_mail_data["html_charset"]
-    origina_sender = parsed_mail_data["original_sender"]
+    original_sender = parsed_mail_data["original_sender"]
             
     response = ses_client.send_email(
         Source= ADDRESS_FOR_FORWARDING,
@@ -126,7 +135,7 @@ def forward_email(parsed_mail_data: Dict[str, str]) -> Dict[str, str]:
             }
         },
         ReplyToAddresses=[
-            origina_sender,
+            original_sender,
         ],
     )
 
@@ -157,14 +166,18 @@ def lambda_handler(event, context):
             'statusCode': 200,
             'body': response
         }
+
     except KeyError:
-        logger.critical(f"Notification parsing failed: {event}", exc_info=True)
+        logger.critical(
+            f"Could not parse parsing failed: {event}", exc_info=True)
     except botocore.exceptions.ClientError:
         logger.critical(
-            f"Client error, check your permissions",
+            f"Client error, check your permissions (policies)",
             exc_info=True)
     except Exception:
-        logger.critical(f"Execution failed", exc_info=True)
+        logger.critical(
+            f"Execution failed. Exception encountered",
+            exc_info=True)
     
     return {
         'statusCode': 500,
